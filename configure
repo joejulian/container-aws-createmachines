@@ -1,0 +1,120 @@
+#!/bin/bash
+
+#
+# The configure script is used to query aws for nodes with two specific tags:
+#   "cms_id" is expected to be the resource id. It can be any arbitrary value that is
+#          unique to the cluster that will be installed by the ssh provisioner.
+#   "role" can be either "Master" or "Node". The master node will be configured
+#          by kubeadm with etcd, and the kubernetes master processes. A node is
+#          a worker node that will be used to run user workloads.
+#
+
+usage() {
+    echo "Usage:"
+    echo "  $0"
+    echo
+    echo "You must set the environment variables:"
+    echo "  AWS_ACCESS_KEY_ID – AWS access key."
+    echo "  AWS_SECRET_ACCESS_KEY – AWS secret key."
+    echo "  AWS_DEFAULT_REGION – AWS region."
+    echo "  CMS_ID – CMS Resource ID"
+    echo "  SSH_USER – ssh username"
+}
+
+check_or_die() {
+    if [[ -z "${!1}" ]]; then
+        echo "Error: $1 is not set"
+        usage
+        exit 1
+    fi
+}
+
+generate_name() {
+    S1=$(cat /dev/urandom | tr -dc 'a-z0-9' | head -c9 | xargs printf "%s")
+    S2=$(cat /dev/urandom | tr -dc 'a-z0-9' | head -c5 | xargs printf "%s")
+    echo -n "$1-$S1-$S2"
+}
+
+NODE='
+{
+  "apiVersion": "cluster.k8s.io/v1alpha1",
+  "kind": "Machine",
+  "metadata": {
+    "generateName": null
+  },
+  "spec": {
+    "providerConfig": {
+      "value": {
+        "apiVersion": "sshproviderconfig/v1alpha1",
+        "kind": "SSHMachineProviderConfig",
+        "roles": null,
+        "sshConfig": {
+          "username": "ubuntu",
+          "host": null,
+          "port": 22,
+          "secretName": "cluster-private-key"
+        }
+      }
+    },
+    "versions": {
+      "kubelet": "1.10.6",
+      "controlPlane": "1.10.6"
+    }
+  }
+}
+'
+
+
+# check requirements
+if [[ -z "$(command -v yq.v2)" ]]; then
+    echo "Please install yq.v2, (ie go get gopkg.in/mikefarah/yq.v2)."
+    exit 1
+fi
+if [[ -z "$(command -v jq)" ]]; then
+    echo "Please install jq, (ie go get github.com/savaki/jq)."
+    exit 1
+fi
+check_or_die "AWS_ACCESS_KEY_ID"
+check_or_die "AWS_SECRET_ACCESS_KEY"
+check_or_die "AWS_DEFAULT_REGION"
+check_or_die "CMS_ID"
+check_or_die "SSH_USER"
+
+# fetch instance data from aws
+MASTER_RESULT=$(aws ec2 describe-instances --filters "Name=tag:cms_id,Values=${CMS_ID}" "Name=tag:role,Values=master" --query 'Reservations[].Instances[].PublicIpAddress')
+WORKER_RESULT=$(aws ec2 describe-instances --filters "Name=tag:cms_id,Values=${CMS_ID}" "Name=tag:role,Values=worker" --query 'Reservations[].Instances[].PublicIpAddress')
+
+# check to see that we have valid json
+if ! jq -c "" <<< $MASTER_RESULT > /dev/null 2>&1 ; then
+    echo "Failure acquiring master IP address(s)"
+fi
+if ! jq -c "" <<< $WORKER_RESULT > /dev/null 2>&1 ; then
+    echo "Failure acquiring worker IP address(s)"
+fi
+
+# build machine-setup data
+MACHINES='{"items":[]}'
+
+for node in $(jq ".[]" <<< $MASTER_RESULT); do
+    NAME="$(generate_name ssh-controlplane)"
+    NODE_ITEM=$(jq '.metadata.name="'${NAME}'"' <<< $NODE |
+        jq '.spec.providerConfig.value.sshConfig.host='${node} |
+        jq '.spec.providerConfig.value.sshConfig.username="'${SSH_USER}'"' |
+        jq -c '[.spec.providerConfig.value.roles=["Master","Etcd"]]')
+    MACHINES=$(jq '.items+='${NODE_ITEM} <<< $MACHINES)
+done
+for node in $(jq ".[]" <<< $WORKER_RESULT); do
+    NAME="$(generate_name ssh-node)"
+    NODE_ITEM=$(jq '.metadata.name="'${NAME}'"' <<< $NODE |
+        jq '.spec.providerConfig.value.sshConfig.host='${node} |
+        jq '.spec.providerConfig.value.sshConfig.username="'${SSH_USER}'"' |
+        jq 'del(.spec.versions.controlPlane)' |
+        jq -c '[.spec.providerConfig.value.roles=["Node"]]')
+    MACHINES=$(jq '.items+='${NODE_ITEM} <<< $MACHINES)
+done
+
+# output the machine-setup ConfigMap
+for item in $(jq -c ".items[]" <<< ${MACHINES}); do
+    echo '---'
+    yq.v2 r - <<< ${item}
+done
