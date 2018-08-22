@@ -249,20 +249,6 @@ Resources:
       VpcId: !Ref VPCID
       InternetGatewayId: !Ref InternetGateway
 
-  NATEIP:
-    DependsOn: VPCGatewayAttachment
-    Type: AWS::EC2::EIP
-    Properties:
-      Domain: vpc
-
-  # The NAT gateway for the private subnet
-  NATGateway:
-    DependsOn: VPCGatewayAttachment
-    Type: AWS::EC2::NatGateway
-    Properties:
-      AllocationId: !GetAtt NATEIP.AllocationId
-      SubnetId: !Ref PublicSubnet
-
   PublicSubnetRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
