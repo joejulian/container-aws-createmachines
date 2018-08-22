@@ -30,6 +30,10 @@ check_or_die() {
 }
 
 generate_name() {
+    # This is required on OSX. Otherwise the tr command will complain:
+    # > tr: Illegal byte sequence
+    LC_CTYPE=C
+
     S1=$(cat /dev/urandom | tr -dc 'a-z0-9' | head -c9 | xargs printf "%s")
     S2=$(cat /dev/urandom | tr -dc 'a-z0-9' | head -c5 | xargs printf "%s")
     echo -n "$1-$S1-$S2"
