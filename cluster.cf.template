@@ -33,11 +33,11 @@ Metadata:
       - KeyName
       - CmsId
       - username
+      - PublicKey
     - Label:
         default: Kubernetes Configuration
       Parameters:
       - K8sNodeCapacity
-
     ParameterLabels:
       KeyName:
         default: SSH Key
@@ -45,6 +45,8 @@ Metadata:
         default: CMS ID
       username:
         default: SSH User
+      PublicKey:
+        default: Public Key
       AvailabilityZone:
         default: Availability Zone
       SSHLocation:
@@ -55,8 +57,6 @@ Metadata:
         default: Disk Size (GiB)
       K8sNodeCapacity:
         default: Node Capacity
-
-
 # The Parameters allow the user to pass custom settings to the stack before creation
 Parameters:
   # Required. Calls for the name of an existing EC2 KeyPair, to enable SSH access to the instances
@@ -66,7 +66,6 @@ Parameters:
     Type: AWS::EC2::KeyPair::KeyName
     ConstraintDescription: must be the name of an existing EC2 KeyPair.
 
-
   CmsId:
     Description: The CMS_ID is arbitrary and will probably end up being the name of the repo
     Type: String
@@ -74,6 +73,10 @@ Parameters:
 
   username:
     Description: SSH User name. Naming rule is following with linux user name.
+    Type: String
+
+  PublicKey:
+    Description: Public Key for SSH User.
     Type: String
 
   # https://aws.amazon.com/ec2/instance-types/
@@ -139,7 +142,7 @@ Parameters:
   # and nodes.
   DiskSizeGb:
     Description: 'Size of the root disk for the EC2 instances, in GiB.  Default: 40'
-    Default: 40
+    Default: 100
     Type: Number
     MinValue: 8
     MaxValue: 1024
@@ -249,20 +252,6 @@ Resources:
       VpcId: !Ref VPCID
       InternetGatewayId: !Ref InternetGateway
 
-  NATEIP:
-    DependsOn: VPCGatewayAttachment
-    Type: AWS::EC2::EIP
-    Properties:
-      Domain: vpc
-
-  # The NAT gateway for the private subnet
-  NATGateway:
-    DependsOn: VPCGatewayAttachment
-    Type: AWS::EC2::NatGateway
-    Properties:
-      AllocationId: !GetAtt NATEIP.AllocationId
-      SubnetId: !Ref PublicSubnet
-
   PublicSubnetRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
@@ -335,6 +324,7 @@ Resources:
             #!/bin/bash
             set -o xtrace
             apt-get update
+            echo ${PublicKey} >> /home/ubuntu/.ssh/authorized_keys
             adduser --disabled-password --gecos "" ${username}
             usermod -aG sudo ${username}
             cp -R /home/ubuntu/.ssh/ /home/${username}/
@@ -430,6 +420,7 @@ Resources:
             wget https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
             easy_install --script-dir /usr/local/bin/ aws-cfn-bootstrap-latest.tar.gz
             apt-get update
+            echo ${PublicKey} >> /home/ubuntu/.ssh/authorized_keys
 
             /usr/local/bin/cfn-init \
               --verbose \
@@ -476,28 +467,18 @@ Resources:
       - Key: Name
         Value: k8s-cluster-security-group
 
+
   # Permissions we add to the main security group:
   # - Ensure cluster machines can talk to one another
   ClusterSecGroupCrossTalk:
-    Type: AWS::EC2::SecurityGroupIngress
-    Properties:
-      GroupId: !Ref ClusterSecGroup
-      SourceSecurityGroupId: !Ref ClusterSecGroup
-      IpProtocol: '-1'
-      FromPort: '0'
-      ToPort: '65535'
-
-  # - Open up port 22 for SSH into each machine
-  # The allowed locations are chosen by the user in the SSHLocation parameter
-  ClusterSecGroupAllow22:
     Metadata:
       Comment: Open up port 22 for SSH into each machine
     Type: AWS::EC2::SecurityGroupIngress
     Properties:
       GroupId: !Ref ClusterSecGroup
-      IpProtocol: tcp
-      FromPort: '22'
-      ToPort: '22'
+      IpProtocol: '-1'
+      FromPort: '0'
+      ToPort: '65535'
       CidrIp: !Ref SSHLocation
 
 
@@ -563,7 +544,14 @@ Resources:
 # like what IP address is assigned to your master node
 # Read Descriptions below for more detail
 Outputs:
+  MasterPublicIp:
+    Description: IP Address of the master node.
+    Value: !GetAtt K8sMaster.PublicIp
 
-  NodeGroupInstanceId:
-    Description: InstanceId of the newly-created NodeGroup.
+  MasterResourceId:
+    Description: Resource Id of the master node.
+    Value: !Ref K8sMaster
+
+  WorkerResourceId:
+    Description: Resource Id of the worker node.
     Value: !Ref K8sNodeGroup
