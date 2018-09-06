@@ -1,0 +1,6 @@
+---
+type: chart
+builds:
+- image: samsung_cnct/cluster-api-provider-ssh-e2e-test
+  context: .
+  locationOverride: .
